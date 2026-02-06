@@ -1,9 +1,48 @@
 import openrgb
 from openrgb.utils import RGBColor, DeviceType, ZoneType
+from copy import deepcopy
 import threading
 import argparse
 import signal
 import sys
+
+class VirtualLinearZone:
+    def __init__(self, device):
+        self.device = device
+
+        base_custom = next(
+            (m for m in device.modes if m.name.lower() == "custom"),
+            None
+        )
+
+        if base_custom:
+            custom = deepcopy(base_custom)
+
+            custom.colors = None
+            custom.colors_min = None
+            custom.colors_max = None
+            custom.speed = None
+            custom.direction = None
+
+            if custom.brightness_min is None or custom.brightness_max is None:
+                custom.brightness = None
+            else:
+                custom.brightness = max(
+                    min(custom.brightness, custom.brightness_max),
+                    custom.brightness_min
+                )
+
+            device.set_mode(custom)
+
+        self.colors = []
+        for led in device.leds:
+            if led.colors:
+                self.colors.append(led.colors[0])
+            else:
+                self.colors.append(RGBColor(0, 0, 0))
+
+    def show(self):
+        self.device.set_colors(self.colors)
 
 class OpenRGBClient:
     def __init__(self, address: str, port: int):
@@ -103,8 +142,27 @@ class OpenRGBClient:
 
     def setEffect(self, effect_name: str):
         if hasattr(self, 'selected_device'):
-            self.zone = next(z for dev in self.client.ee_devices for z in dev.zones if z.type == ZoneType.LINEAR)
-            self.step = int(360/len(self.zone.colors))
+            # 1) Prefer real LINEAR zones if they exist
+            zone = next(
+                (
+                    z for dev in self.client.devices
+                    for z in dev.zones
+                    if z.type == ZoneType.LINEAR
+                ),
+                None
+            )
+
+            # 2) Fallback: emulate a linear zone using per-LED Custom mode
+            if zone is None:
+                if not self.selected_device.leds:
+                    print("Device has no LEDs to animate.")
+                    return
+                zone = VirtualLinearZone(self.selected_device)
+
+            self.zone = zone
+            print(f"Virtual zone with {len(self.zone.colors)} LEDs")
+            self.step = int(360 / len(self.zone.colors))
+
             try:
                 self.effects[effect_name]()
             except KeyError:
