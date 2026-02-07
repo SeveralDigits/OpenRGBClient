@@ -1,6 +1,8 @@
 import openrgb
 from openrgb.utils import RGBColor, DeviceType, ZoneType
+from pathlib import Path
 from copy import deepcopy
+import pluginLib
 import threading
 import argparse
 import signal
@@ -55,23 +57,34 @@ class OpenRGBClient:
             exit(1)
         self.devices = self.client.devices
 
-        self.effects = {
-            "rainbow": self.effectRainbow,
-            "rainbow-cycle": self.effectRainbowCycle,
-            "alternate": self.effectAlternate,
-        }
-
         self.effect_thread = None
         self.shutdown_event = threading.Event()
+
+        #set up plugin manager and load effects
+        plugins_dir = Path(__file__).parent.parent / "plugins"
+        self.plugin_manager = pluginLib.PluginManager(plugins_dir=plugins_dir)
+        self.effects = self._bundle_effects()
+        self._print_available_effects()
     
-    def listDevices(self): # DEBUG METHOD
-        for device in self.devices:
-            print(f"Device: {device.name}")
-            print(f"  Type: {device.type}")
-            print(f"  Mode: {device.modes}")
-            print(f"  Colors: {device.colors}")
-            print(f"  Zones: {device.zones}")
+    def _bundle_effects(self) -> dict:
+        """Bundle all plugin functions into a single effects dictionary"""
+        effects = {}
+        
+        for plugin_name, plugin in self.plugin_manager.get_all_plugins().items():
+            for func_name, func_meta in plugin.functions.items():
+                # Create a unique key: "plugin-name.function-name"
+                effect_key = f"{plugin_name}.{func_name}"
+                
+                # Store the function reference directly (it's callable via FunctionMetadata)
+                effects[effect_key] = func_meta
+        
+        return effects
     
+    def _print_available_effects(self):
+        print("Available effects:")
+        for effect_name in self.effects.keys():
+            print(f" - {effect_name}")
+
     def selectDeviceByName(self, device_name: str):
         try:
             self.selected_device = self.client.get_devices_by_name(device_name)[0]
@@ -89,56 +102,6 @@ class OpenRGBClient:
             self.shutdown_event.set()
             self.effect_thread.join()
             self.effect_thread = None
-
-    @staticmethod
-    def threaded_effect(func):
-        def wrapper(self, *args, **kwargs):
-            self._stop_current_effect()
-
-            self.shutdown_event.clear()
-
-            # Store the thread so we can join later
-            self.effect_thread = threading.Thread(
-                target=func,
-                args=(self, *args),
-                kwargs=kwargs,
-                daemon=False
-            )
-            self.effect_thread.start()
-
-        return wrapper
-
-    @threaded_effect
-    def effectRainbowCycle(self):
-        
-        offset = 0
-        while not self.shutdown_event.is_set():
-            for i in range(len(self.zone.colors)):
-                hue = (i * self.step + offset) % 360
-                self.zone.colors[i] = RGBColor.fromHSV(hue, 100, 100)
-            self.zone.show()
-            offset += 5
-            self.shutdown_event.wait(0.05) # cooperative sleep
-    
-    @threaded_effect
-    def effectAlternate(self):
-        num_leds = len(self.zone.colors)
-        offset = 0
-
-        while not self.shutdown_event.is_set():
-            for i in range(num_leds):
-                if (i + offset) % 2 == 0:
-                    self.zone.colors[i] = RGBColor(255, 0, 0)
-                else:
-                    self.zone.colors[i] = RGBColor(255, 255, 255)
-            self.zone.show()
-            offset += 1
-            self.shutdown_event.wait(0.05)  # cooperative sleep
-
-    def effectRainbow(self):
-        for i, hue in enumerate(range(0, 360, self.step)):
-            self.zone.colors[i] = RGBColor.fromHSV(hue, 100, 100)
-        self.zone.show()
 
     def setEffect(self, effect_name: str):
         if hasattr(self, 'selected_device'):
@@ -164,7 +127,21 @@ class OpenRGBClient:
             self.step = int(360 / len(self.zone.colors))
 
             try:
-                self.effects[effect_name]()
+                effect_func = self.effects[effect_name]
+                if effect_func.looped:
+                    self._stop_current_effect()
+
+                    self.shutdown_event.clear()
+
+                    # Store the thread so we can join later
+                    self.effect_thread = threading.Thread(
+                        target=effect_func,
+                        args=(self.zone, self.step, self.shutdown_event),
+                        daemon=False
+                    )
+                    self.effect_thread.start()
+                else:
+                    effect_func(self.zone, self.step, self.shutdown_event)
             except KeyError:
                 raise ValueError(f"Unknown effect: {effect_name}")
         else:

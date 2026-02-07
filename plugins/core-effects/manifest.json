@@ -1,0 +1,15 @@
+{
+  "name": "core-effects",
+  "version": "1.0.0",
+  "description": "Contains all default RGB effects.",
+  "author": "SeveralDigits",
+  "main": "core-effects.py",
+  "functions": [
+    { "name": "rainbow", "looped": false },
+    { "name": "rainbowCycle", "looped": true },
+    { "name": "alternate", "looped": true }
+  ],
+  "dependencies": {
+    "openrgb-python": "~=0.3.6"
+  }
+}
