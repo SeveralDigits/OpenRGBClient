@@ -2,6 +2,8 @@ from pathlib import Path
 from typing import Dict, Optional, List, Callable
 import json
 import importlib.util
+import subprocess
+import sys
 from dataclasses import dataclass
 from enum import Enum
 
@@ -75,6 +77,26 @@ class PluginManager:
             except Exception as e:
                 self._load_errors[str(manifest_path)] = e
     
+    def _install_dependencies(self, plugin_name: str, dependencies: Dict[str, str]) -> None:
+        """Install plugin dependencies using pip"""
+        if not dependencies:
+            return
+        
+        print(f"  Installing dependencies for {plugin_name}...")
+        for package_name, version_spec in dependencies.items():
+            try:
+                pip_spec = f"{package_name}{version_spec}"
+                print(f"    Installing {pip_spec}...", end=" ")
+                subprocess.check_call(
+                    [sys.executable, "-m", "pip", "install", pip_spec],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                print("✓")
+            except subprocess.CalledProcessError as e:
+                print(f"✗")
+                raise Exception(f"Failed to install {package_name}{version_spec}: {e}")
+    
     def _load_plugin(self, plugin_name: str) -> Optional[Plugin]:
         """Load a single plugin by name"""
         if plugin_name not in self._manifests:
@@ -86,6 +108,11 @@ class PluginManager:
             # Read manifest
             with open(manifest_path, 'r') as f:
                 manifest = json.load(f)
+            
+            # Install dependencies before loading the plugin
+            dependencies = manifest.get('dependencies', {})
+            if dependencies:
+                self._install_dependencies(plugin_name, dependencies)
             
             # Load the plugin module
             plugin_dir = manifest_path.parent
