@@ -8,6 +8,32 @@ import argparse
 import signal
 import sys
 
+class CombinedLinearZone:
+    def __init__(self, zones):
+        self.zones = zones
+
+        # Build one continuous color buffer
+        self.colors = []
+        for z in zones:
+            # Initialize from current zone colors
+            if hasattr(z, "colors") and z.colors:
+                self.colors.extend(z.colors)
+            else:
+                # Fallback if needed
+                self.colors.extend([RGBColor(0, 0, 0)] * len(z.leds))
+
+    def show(self):
+        index = 0
+
+        for z in self.zones:
+            led_count = len(z.leds)
+
+            # Slice correct segment for this zone
+            segment = self.colors[index:index + led_count]
+
+            z.set_colors(segment)
+            index += led_count
+
 class VirtualLinearZone:
     def __init__(self, device):
         self.device = device
@@ -105,32 +131,40 @@ class OpenRGBClient:
 
     def setEffect(self, effect_name: str):
         if hasattr(self, 'selected_device'):
-            # 1) Prefer real LINEAR zones if they exist
-            zone = next(
-                (
-                    z for dev in self.client.devices
-                    for z in dev.zones
-                    if z.type == ZoneType.LINEAR
-                ),
-                None
-            )
+            # Gather all LINEAR zones from the selected device
+            linear_zones = [
+                z for z in self.selected_device.zones
+                if z.type == ZoneType.LINEAR
+            ]
 
-            # 2) Fallback: emulate a linear zone using per-LED Custom mode
-            if zone is None:
+            if not linear_zones:
+                # Fallback: emulate a linear zone using per-LED Custom mode
                 if not self.selected_device.leds:
                     print("Device has no LEDs to animate.")
                     return
                 zone = VirtualLinearZone(self.selected_device)
+                self.zone = zone
+                print(f"Using virtual zone with {len(self.zone.colors)} LEDs")
 
-            self.zone = zone
-            print(f"Virtual zone with {len(self.zone.colors)} LEDs")
-            self.step = int(360 / len(self.zone.colors))
+            elif len(linear_zones) == 1:
+                zone = linear_zones[0]
+                self.zone = zone
+                print(f"Using real zone: {zone.name} ({len(zone.leds)} LEDs)")
+
+            else:
+                # Merge multiple LINEAR zones into one logical zone
+                zone = CombinedLinearZone(linear_zones)
+                self.zone = zone
+                total_leds = sum(len(z.leds) for z in linear_zones)
+                print(f"Merged {len(linear_zones)} zones into one ({total_leds} LEDs)")
+
+            # Step is always LED count for plugin effects
+            self.step = len(self.zone.colors)
 
             try:
                 effect_func = self.effects[effect_name]
                 if effect_func.looped:
                     self._stop_current_effect()
-
                     self.shutdown_event.clear()
 
                     # Store the thread so we can join later
@@ -144,6 +178,7 @@ class OpenRGBClient:
                     effect_func(self.zone, self.step, self.shutdown_event)
             except KeyError:
                 raise ValueError(f"Unknown effect: {effect_name}")
+
         else:
             print("No device selected. Use selectDeviceByName() to select a device first.")
 
